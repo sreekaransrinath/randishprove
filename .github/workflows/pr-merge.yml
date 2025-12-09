@@ -1,0 +1,46 @@
+name: Random PR merge
+
+on:
+  schedule:
+    - cron: "20 10 * * *"   # every day at 10:20 UTC
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  pr-merge:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Merge up to 2 random PRs
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Looking for up to 2 open PRs with 'Random PR' in the title to merge."
+
+          pr_numbers=$(gh pr list \
+            --repo "$TARGET_REPO" \
+            --state open \
+            --limit 50 \
+            | awk '/Random PR/ {print $1}' \
+            | head -n 2)
+
+          if [[ -z "${pr_numbers}" ]]; then
+            echo "No matching open PRs found."
+            exit 0
+          fi
+
+          for num in $pr_numbers; do
+            echo "Merging PR #$num"
+            gh pr merge "$num" \
+              --repo "$TARGET_REPO" \
+              --merge \
+              --delete-branch \
+              --body "Automated merge of random PR."
+          done
