@@ -1,0 +1,44 @@
+name: Random PR approve
+
+on:
+  schedule:
+    - cron: "15 10 * * *"   # every day at 10:15 UTC
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  pr-approve:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Approve up to 3 random PRs
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Looking for up to 3 open PRs with 'Random PR' in the title."
+
+          pr_numbers=$(gh pr list \
+            --repo "$TARGET_REPO" \
+            --state open \
+            --limit 50 \
+            | awk '/Random PR/ {print $1}' \
+            | head -n 3)
+
+          if [[ -z "${pr_numbers}" ]]; then
+            echo "No matching open PRs found."
+            exit 0
+          fi
+
+          for num in $pr_numbers; do
+            echo "Approving PR #$num"
+            gh pr review "$num" \
+              --repo "$TARGET_REPO" \
+              --approve \
+              --body "Automated review: looks good to me."
+          done
