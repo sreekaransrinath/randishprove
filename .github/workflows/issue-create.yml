@@ -23,8 +23,8 @@ jobs:
 
           DAY_OF_YEAR=$(date -u +%j)
 
-          if (( DAY_OF_YEAR % 2 == 1 )); then
-            echo "Day-of-year $DAY_OF_YEAR is odd, skipping issue creation."
+          if (( DAY_OF_YEAR % 2 == 0 )); then
+            echo "Day-of-year $DAY_OF_YEAR is even, skipping issue creation."
             exit 0
           fi
 
