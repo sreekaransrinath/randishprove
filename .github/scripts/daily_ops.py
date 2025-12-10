@@ -112,6 +112,15 @@ def configure_git_identity(name=None, email=None):
     run_command(['git', 'config', 'user.name', name])
     run_command(['git', 'config', 'user.email', email])
 
+def ensure_label_exists(name, color, description, token):
+    # Check if label exists
+    try:
+        run_command(['gh', 'label', 'view', name, '--repo', REPO], token)
+    except subprocess.CalledProcessError:
+        # Label doesn't exist, create it
+        print(f"Creating label '{name}'...")
+        run_command(['gh', 'label', 'create', name, '--repo', REPO, '--color', color, '--description', description], token)
+
 def main():
     # 1. Random Skip (1 in 7 chance)
     if random.randint(1, 7) == 1:
@@ -120,6 +129,10 @@ def main():
 
     day_of_year = get_day_of_year()
     print(f"Day of year: {day_of_year}")
+    
+    # Ensure labels exist
+    ensure_label_exists('has-pr', '0E8A16', 'Indicates this issue has an attached PR', GITHUB_TOKEN)
+    ensure_label_exists('has-issue', '1D76DB', 'Indicates this PR is attached to an issue', GITHUB_TOKEN)
     
     # Queue Processing Function
     def process_queue():
