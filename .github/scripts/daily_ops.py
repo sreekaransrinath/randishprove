@@ -23,9 +23,10 @@ def run_command(command, token=None):
         env["GH_TOKEN"] = token
     
     try:
+        # Use shell=False and pass command as list for security
         result = subprocess.run(
             command,
-            shell=True,
+            shell=False,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -46,24 +47,24 @@ def get_current_timestamp():
     return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def create_issue(title, body, token):
-    cmd = f'gh issue create --repo "{REPO}" --title "{title}" --body "{body}" --json number'
+    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body, '--json', 'number']
     output = run_command(cmd, token)
     return json.loads(output)['number']
 
 def create_pr(title, body, head_branch, token):
-    cmd = f'gh pr create --repo "{REPO}" --head "{head_branch}" --base "{DEFAULT_BRANCH}" --title "{title}" --body "{body}" --json number'
+    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body, '--json', 'number']
     output = run_command(cmd, token)
     return json.loads(output)['number']
 
 def get_open_issues_without_pr():
-    cmd = f'gh issue list --repo "{REPO}" --state open --json number,labels,title --limit 100'
+    cmd = ['gh', 'issue', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,labels,title', '--limit', '100']
     output = run_command(cmd, GITHUB_TOKEN) # Token doesn't matter much for reading public/repo info
     issues = json.loads(output)
     # Filter out issues that already have 'has-pr' label
     return sorted([i for i in issues if not any(l['name'] == 'has-pr' for l in i['labels'])], key=lambda x: x['number'])
 
 def get_open_prs_without_issue():
-    cmd = f'gh pr list --repo "{REPO}" --state open --json number,labels,title --limit 100'
+    cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,labels,title', '--limit', '100']
     output = run_command(cmd, GITHUB_TOKEN)
     prs = json.loads(output)
     # Filter out PRs that already have 'has-issue' label
@@ -73,17 +74,20 @@ def link_pr_to_issue(pr_number, issue_number, token):
     print(f"Linking PR #{pr_number} to Issue #{issue_number}")
     
     # 1. Update Issue: Add label 'has-pr', add comment
-    run_command(f'gh issue edit "{issue_number}" --repo "{REPO}" --add-label "has-pr"', token)
-    run_command(f'gh issue comment "{issue_number}" --repo "{REPO}" --body "Linked to PR #{pr_number}"', token)
+    run_command(['gh', 'issue', 'edit', str(issue_number), '--repo', REPO, '--add-label', 'has-pr'], token)
+    run_command(['gh', 'issue', 'comment', str(issue_number), '--repo', REPO, '--body', f'Linked to PR #{pr_number}'], token)
     
     # 2. Update PR: Add label 'has-issue', add comment, update body
-    run_command(f'gh pr edit "{pr_number}" --repo "{REPO}" --add-label "has-issue"', token)
+    run_command(['gh', 'pr', 'edit', str(pr_number), '--repo', REPO, '--add-label', 'has-issue'], token)
     # Append "Fixes #IssueID" to the PR body for cross-referencing
     # First get current body
-    current_body = json.loads(run_command(f'gh pr view "{pr_number}" --repo "{REPO}" --json body', token))['body']
-    new_body = f"{current_body}\n\nFixes #{issue_number}"
-    run_command(f'gh pr edit "{pr_number}" --repo "{REPO}" --body "{new_body}"', token)
-    run_command(f'gh pr comment "{pr_number}" --repo "{REPO}" --body "Linked to Issue #{issue_number}"', token)
+    current_body_json = run_command(['gh', 'pr', 'view', str(pr_number), '--repo', REPO, '--json', 'body'], token)
+    current_body = json.loads(current_body_json).get('body')
+    if current_body is None:
+        current_body = ""
+    new_body = f"{current_body}\n\nFixes #{issue_number}".strip()
+    run_command(['gh', 'pr', 'edit', str(pr_number), '--repo', REPO, '--body', new_body], token)
+    run_command(['gh', 'pr', 'comment', str(pr_number), '--repo', REPO, '--body', f'Linked to Issue #{issue_number}'], token)
 
 def create_git_branch(branch_name):
     # Determine the token to use for git operations based on identity
@@ -91,15 +95,20 @@ def create_git_branch(branch_name):
     # or we use the GITHUB_TOKEN for basic git ops if needed.
     # However, to push as a specific user, the workflow needs to configure git config.
     
-    run_command(f'git fetch origin "{DEFAULT_BRANCH}"')
-    run_command(f'git checkout "{DEFAULT_BRANCH}"')
-    run_command(f'git checkout -b "{branch_name}"')
-    run_command(f'git commit --allow-empty -m "Empty commit for {branch_name}"')
-    run_command(f'git push origin "{branch_name}"')
+    run_command(['git', 'fetch', 'origin', DEFAULT_BRANCH])
+    run_command(['git', 'checkout', DEFAULT_BRANCH])
+    run_command(['git', 'checkout', '-b', branch_name])
+    run_command(['git', 'commit', '--allow-empty', '-m', f'Empty commit for {branch_name}'])
+    run_command(['git', 'push', 'origin', branch_name])
 
-def configure_git_identity(name, email):
-    run_command(f'git config user.name "{name}"')
-    run_command(f'git config user.email "{email}"')
+def configure_git_identity(name=None, email=None):
+    if not name:
+        name = os.environ.get("GIT_USER_NAME", "Daily Ops Bot")
+    if not email:
+        email = os.environ.get("GIT_USER_EMAIL", "daily-ops-bot@example.com")
+
+    run_command(['git', 'config', 'user.name', name])
+    run_command(['git', 'config', 'user.email', email])
 
 def main():
     # 1. Random Skip (1 in 7 chance)
@@ -163,7 +172,7 @@ def main():
         
         # Create User PRs (1-2)
         # Configure git for User
-        configure_git_identity("sreekaran", "ss@sreekaran.com")
+        configure_git_identity()
         
         num_prs = random.randint(1, 2)
         print(f"Creating {num_prs} User PRs...")
@@ -182,13 +191,13 @@ def main():
         # However, recipe says "merge all user PRs attached to an issue".
         # We can differentiate by branch name pattern 'user-pr' vs 'bot-pr' or fetch author.
         print("Merging User PRs...")
-        cmd = f'gh pr list --repo "{REPO}" --state open --json number,headRefName,labels --limit 100'
+        cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels', '--limit', '100']
         prs = json.loads(run_command(cmd, GITHUB_TOKEN))
         
         for pr in prs:
             if 'user-pr' in pr['headRefName'] and any(l['name'] == 'has-issue' for l in pr['labels']):
                 print(f"Merging User PR #{pr['number']}")
-                run_command(f'gh pr merge "{pr["number"]}" --repo "{REPO}" --merge --delete-branch', PERSONAL_ACCESS_TOKEN)
+                run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], PERSONAL_ACCESS_TOKEN)
         
         # Approve Bot PRs (attached to issue) (1-2)
         print("Approving Bot PRs...")
@@ -198,13 +207,13 @@ def main():
         for i in range(num_to_approve):
             pr = bot_prs_linked[i]
             print(f"Approving Bot PR #{pr['number']}")
-            run_command(f'gh pr review "{pr["number"]}" --repo "{REPO}" --approve --body "LGTM"', PERSONAL_ACCESS_TOKEN)
+            run_command(['gh', 'pr', 'review', str(pr['number']), '--repo', REPO, '--approve', '--body', 'LGTM'], PERSONAL_ACCESS_TOKEN)
             
         # Merge Bot PRs (attached + approved)
         print("Merging Approved Bot PRs...")
         # Re-fetch PRs to get updated review status, or just iterate and check
         # We need to check review status for bot PRs
-        cmd = f'gh pr list --repo "{REPO}" --state open --json number,headRefName,labels,reviews --limit 100'
+        cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels,reviews', '--limit', '100']
         prs_full = json.loads(run_command(cmd, GITHUB_TOKEN))
         
         for pr in prs_full:
@@ -218,12 +227,12 @@ def main():
                 # but let's try 'reviewDecision' if available in list. 'reviewDecision' is 'APPROVED'.
                 
                 # Let's verify review status using reviewDecision
-                status_cmd = f'gh pr view "{pr["number"]}" --repo "{REPO}" --json reviewDecision'
+                status_cmd = ['gh', 'pr', 'view', str(pr['number']), '--repo', REPO, '--json', 'reviewDecision']
                 decision = json.loads(run_command(status_cmd, GITHUB_TOKEN)).get('reviewDecision')
                 
                 if decision == 'APPROVED':
                     print(f"Merging Bot PR #{pr['number']}")
-                    run_command(f'gh pr merge "{pr["number"]}" --repo "{REPO}" --merge --delete-branch', PERSONAL_ACCESS_TOKEN)
+                    run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], PERSONAL_ACCESS_TOKEN)
 
         # Close Issues linked to merged PRs
         # The "Fixes #ID" in body should auto-close issues when PR is merged to default branch.
@@ -239,4 +248,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
