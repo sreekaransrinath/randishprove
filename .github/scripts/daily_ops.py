@@ -4,7 +4,35 @@ import subprocess
 import json
 import sys
 import argparse
+import time
 from datetime import datetime
+
+# Debug Logging Setup
+LOG_PATH = "/Users/sreekaran/Projects/randishprove/.cursor/debug.log"
+
+def log_debug(message, data=None, location="", hypothesis_id=""):
+    entry = {
+        "id": f"log_{int(time.time())}_{random.randint(1000,9999)}",
+        "timestamp": int(time.time() * 1000),
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "sessionId": "debug-session",
+        "runId": os.environ.get("GITHUB_RUN_ID", "local"),
+        "hypothesisId": hypothesis_id
+    }
+    # #region agent log
+    try:
+        # Check if we can write to the log file (mostly for local testing)
+        log_dir = os.path.dirname(LOG_PATH)
+        if os.path.exists(log_dir):
+            with open(LOG_PATH, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+    # Print to stdout for CI visibility
+    print(f"[DEBUG_LOG] {json.dumps(entry)}")
+    # #endregion
 
 # Environment variables
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -19,6 +47,9 @@ if not GITHUB_TOKEN or not PERSONAL_ACCESS_TOKEN or not REPO:
 
 def run_command(command, token=None):
     """Runs a shell command and returns the output."""
+    # #region agent log
+    log_debug("Running command", {"command": command}, "daily_ops.py:run_command", "General")
+    # #endregion
     env = os.environ.copy()
     if token:
         env["GH_TOKEN"] = token
@@ -114,10 +145,16 @@ def configure_git_identity(name=None, email=None):
     run_command(['git', 'config', 'user.email', email])
 
 def ensure_label_exists(name, color, description, token):
+    # #region agent log
+    log_debug("ensure_label_exists called", {"name": name}, "daily_ops.py:ensure_label_exists", "HypothesisA")
+    # #endregion
     # Check if label exists
     try:
         run_command(['gh', 'label', 'view', name, '--repo', REPO], token)
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        # #region agent log
+        log_debug("gh label view failed", {"stderr": e.stderr}, "daily_ops.py:ensure_label_exists", "HypothesisA")
+        # #endregion
         # Label doesn't exist, create it
         print(f"Creating label '{name}'...")
         run_command(['gh', 'label', 'create', name, '--repo', REPO, '--color', color, '--description', description], token)
