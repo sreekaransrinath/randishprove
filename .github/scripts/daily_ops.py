@@ -47,14 +47,16 @@ def get_current_timestamp():
     return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def create_issue(title, body, token):
-    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body, '--json', 'number']
+    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body]
     output = run_command(cmd, token)
-    return json.loads(output)['number']
+    # Output is typically the URL, e.g., https://github.com/owner/repo/issues/123
+    return int(output.split('/')[-1])
 
 def create_pr(title, body, head_branch, token):
-    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body, '--json', 'number']
+    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body]
     output = run_command(cmd, token)
-    return json.loads(output)['number']
+    # Output is typically the URL, e.g., https://github.com/owner/repo/pull/456
+    return int(output.split('/')[-1])
 
 def get_open_issues_without_pr():
     cmd = ['gh', 'issue', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,labels,title', '--limit', '100']
