@@ -176,7 +176,7 @@ def action_link_prs_issues(count=100):
         link_pr_to_issue(pr['number'], issue['number'], GITHUB_TOKEN)
         processed += 1
 
-def action_merge_prs(as_user_prs=False, count=100):
+def action_merge_prs(as_user_prs=False, count=100, merge_token=PERSONAL_ACCESS_TOKEN):
     target_type = "User" if as_user_prs else "Bot"
     search_str = 'user-pr' if as_user_prs else 'bot-pr'
     
@@ -189,7 +189,6 @@ def action_merge_prs(as_user_prs=False, count=100):
         if processed >= count:
             break
 
-        # Check if it matches type and is linked to an issue
         if search_str in pr['headRefName'] and any(l['name'] == 'has-issue' for l in pr['labels']):
             
             # For Bot PRs, we usually require approval first
@@ -206,7 +205,7 @@ def action_merge_prs(as_user_prs=False, count=100):
                     continue
 
             print(f"Merging {target_type} PR #{pr['number']}")
-            run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], PERSONAL_ACCESS_TOKEN)
+            run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], merge_token)
             processed += 1
 
 def action_approve_bot_prs(count):
@@ -306,9 +305,9 @@ def main():
     elif args.action == "approve_bot_prs":
         action_approve_bot_prs(args.count)
     elif args.action == "merge_bot_prs":
-        action_merge_prs(as_user_prs=False, count=args.count)
+        action_merge_prs(as_user_prs=False, count=args.count, merge_token=GITHUB_TOKEN)
     elif args.action == "merge_user_prs":
-        action_merge_prs(as_user_prs=True, count=args.count)
+        action_merge_prs(as_user_prs=True, count=args.count, merge_token=GITHUB_TOKEN)
     elif args.action == "close_issues":
         action_close_issues(args.count)
 
