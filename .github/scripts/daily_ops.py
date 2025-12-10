@@ -48,16 +48,14 @@ def get_current_timestamp():
     return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def create_issue(title, body, token):
-    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body]
+    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body, '--json', 'number']
     output = run_command(cmd, token)
-    # Output is typically the URL, e.g., https://github.com/owner/repo/issues/123
-    return int(output.split('/')[-1])
+    return json.loads(output)['number']
 
 def create_pr(title, body, head_branch, token):
-    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body]
+    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body, '--json', 'number']
     output = run_command(cmd, token)
-    # Output is typically the URL, e.g., https://github.com/owner/repo/pull/456
-    return int(output.split('/')[-1])
+    return json.loads(output)['number']
 
 def get_open_issues_without_pr():
     cmd = ['gh', 'issue', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,labels,title', '--limit', '100']
@@ -104,12 +102,7 @@ def create_git_branch(branch_name):
     run_command(['git', 'commit', '--allow-empty', '-m', f'Empty commit for {branch_name}'])
     run_command(['git', 'push', 'origin', branch_name])
 
-def configure_git_identity(name=None, email=None):
-    if not name:
-        name = os.environ.get("GIT_USER_NAME", "Daily Ops Bot")
-    if not email:
-        email = os.environ.get("GIT_USER_EMAIL", "daily-ops-bot@example.com")
-
+def configure_git_identity(name, email):
     run_command(['git', 'config', 'user.name', name])
     run_command(['git', 'config', 'user.email', email])
 
@@ -151,7 +144,7 @@ def action_create_prs(count, as_user=False):
     prefix = "user" if as_user else "bot"
     
     if as_user:
-        configure_git_identity() # Uses default or env vars for user
+        configure_git_identity("sreekaran", "ss@sreekaran.com")
     else:
         configure_git_identity("github-actions[bot]", "github-actions[bot]@users.noreply.github.com")
 
@@ -194,9 +187,6 @@ def action_merge_prs(as_user_prs=False, count=100, merge_token=PERSONAL_ACCESS_T
             # For Bot PRs, we usually require approval first
             if not as_user_prs:
                 # Check review decision
-                # Note: 'reviews' field might be complex, rely on 'reviewDecision' if available or explicit check?
-                # The list command above includes 'reviews' but 'reviewDecision' is often safer if available in list context (sometimes requires graphQL or separate fetch)
-                # Let's fetch status individually to be safe/consistent with previous logic
                 status_cmd = ['gh', 'pr', 'view', str(pr['number']), '--repo', REPO, '--json', 'reviewDecision']
                 decision = json.loads(run_command(status_cmd, GITHUB_TOKEN)).get('reviewDecision')
                 
@@ -219,6 +209,7 @@ def action_approve_bot_prs(count):
     for i in range(num_to_approve):
         pr = bot_prs_linked[i]
         print(f"Approving Bot PR #{pr['number']}")
+        # Use PERSONAL_ACCESS_TOKEN to approve on behalf of the user
         run_command(['gh', 'pr', 'review', str(pr['number']), '--repo', REPO, '--approve', '--body', 'LGTM'], PERSONAL_ACCESS_TOKEN)
 
 def action_close_issues(count=100):
@@ -266,13 +257,16 @@ def run_daily_recipe():
         action_link_prs_issues()
     
     # Common Daily Operations
-    action_merge_prs(as_user_prs=True) # Merge User PRs
+    # Merge User PRs - Use PERSONAL_ACCESS_TOKEN to simulate user merge, OR GITHUB_TOKEN if bot should do it.
+    # Recipe says "merge all user PRs". Defaulting to GITHUB_TOKEN for reliability in automation.
+    action_merge_prs(as_user_prs=True, merge_token=GITHUB_TOKEN) 
     
     if day_of_year % 2 != 0:
         # Odd day specific: Approve Bot PRs
         action_approve_bot_prs(random.randint(1, 2))
         
-    action_merge_prs(as_user_prs=False) # Merge Bot PRs (if approved)
+    # Merge Bot PRs (if approved)
+    action_merge_prs(as_user_prs=False, merge_token=GITHUB_TOKEN)
     action_close_issues()
 
 def main():
@@ -305,8 +299,10 @@ def main():
     elif args.action == "approve_bot_prs":
         action_approve_bot_prs(args.count)
     elif args.action == "merge_bot_prs":
+        # Explicitly use GITHUB_TOKEN for bot identity merges as requested
         action_merge_prs(as_user_prs=False, count=args.count, merge_token=GITHUB_TOKEN)
     elif args.action == "merge_user_prs":
+        # Explicitly use GITHUB_TOKEN for bot identity merges as requested
         action_merge_prs(as_user_prs=True, count=args.count, merge_token=GITHUB_TOKEN)
     elif args.action == "close_issues":
         action_close_issues(args.count)
