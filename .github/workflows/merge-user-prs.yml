@@ -2,6 +2,12 @@ name: Merge User PRs
 
 on:
   workflow_dispatch:
+    inputs:
+      count:
+        description: 'Limit number of PRs to merge (optional)'
+        required: false
+        default: '100'
+        type: string
 
 permissions:
   contents: write
@@ -24,5 +30,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
-          python .github/scripts/daily_ops.py --action merge_user_prs
-
+          python .github/scripts/daily_ops.py --action merge_user_prs --count ${{ inputs.count }}

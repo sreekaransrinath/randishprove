@@ -4,35 +4,7 @@ import subprocess
 import json
 import sys
 import argparse
-import time
 from datetime import datetime
-
-# Debug Logging Setup
-LOG_PATH = "/Users/sreekaran/Projects/randishprove/.cursor/debug.log"
-
-def log_debug(message, data=None, location="", hypothesis_id=""):
-    entry = {
-        "id": f"log_{int(time.time())}_{random.randint(1000,9999)}",
-        "timestamp": int(time.time() * 1000),
-        "location": location,
-        "message": message,
-        "data": data or {},
-        "sessionId": "debug-session",
-        "runId": os.environ.get("GITHUB_RUN_ID", "local"),
-        "hypothesisId": hypothesis_id
-    }
-    # #region agent log
-    try:
-        # Check if we can write to the log file (mostly for local testing)
-        log_dir = os.path.dirname(LOG_PATH)
-        if os.path.exists(log_dir):
-            with open(LOG_PATH, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
-    # Print to stdout for CI visibility
-    print(f"[DEBUG_LOG] {json.dumps(entry)}")
-    # #endregion
 
 # Environment variables
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -47,9 +19,6 @@ if not GITHUB_TOKEN or not PERSONAL_ACCESS_TOKEN or not REPO:
 
 def run_command(command, token=None):
     """Runs a shell command and returns the output."""
-    # #region agent log
-    log_debug("Running command", {"command": command}, "daily_ops.py:run_command", "General")
-    # #endregion
     env = os.environ.copy()
     if token:
         env["GH_TOKEN"] = token
@@ -145,10 +114,6 @@ def configure_git_identity(name=None, email=None):
     run_command(['git', 'config', 'user.email', email])
 
 def ensure_label_exists(name, color, description, token):
-    # #region agent log
-    log_debug("ensure_label_exists called", {"name": name}, "daily_ops.py:ensure_label_exists", "HypothesisA")
-    # #endregion
-    
     print(f"Ensuring label '{name}' exists...")
     try:
         # Use 'list' instead of 'view' as 'view' is not supported in all gh versions
@@ -158,9 +123,6 @@ def ensure_label_exists(name, color, description, token):
         existing_names = [l['name'] for l in labels]
         
         if name in existing_names:
-            # #region agent log
-            log_debug("Label already exists", {"name": name}, "daily_ops.py:ensure_label_exists", "HypothesisA")
-            # #endregion
             print(f"Label '{name}' already exists.")
             return
 
@@ -168,9 +130,6 @@ def ensure_label_exists(name, color, description, token):
         run_command(['gh', 'label', 'create', name, '--repo', REPO, '--color', color, '--description', description], token)
         
     except Exception as e:
-        # #region agent log
-        log_debug("Label check/create failed", {"error": str(e)}, "daily_ops.py:ensure_label_exists", "HypothesisA")
-        # #endregion
         print(f"Warning: Could not ensure label '{name}' exists: {e}")
 
 # --- Atomic Operations ---
@@ -203,27 +162,33 @@ def action_create_prs(count, as_user=False):
         create_git_branch(branch_name)
         create_pr(f"Random {creator} PR {ts} #{i+1}", f"Auto-generated {prefix} PR.", branch_name, token)
 
-def action_link_prs_issues():
-    print("Processing queue (Linking PRs to Issues)...")
+def action_link_prs_issues(count=100):
+    print(f"Processing queue (Linking up to {count} PRs to Issues)...")
     unlinked_issues = get_open_issues_without_pr()
     unlinked_prs = get_open_prs_without_issue()
     
     # Process as many pairs as possible
-    while unlinked_issues and unlinked_prs:
+    processed = 0
+    while unlinked_issues and unlinked_prs and processed < count:
         issue = unlinked_issues.pop(0)
         pr = unlinked_prs.pop(0)
         # Use GITHUB_TOKEN for linking actions (bot permissions usually sufficient)
         link_pr_to_issue(pr['number'], issue['number'], GITHUB_TOKEN)
+        processed += 1
 
-def action_merge_prs(as_user_prs=False):
+def action_merge_prs(as_user_prs=False, count=100):
     target_type = "User" if as_user_prs else "Bot"
     search_str = 'user-pr' if as_user_prs else 'bot-pr'
     
-    print(f"Merging {target_type} PRs...")
+    print(f"Merging up to {count} {target_type} PRs...")
     cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels,reviews', '--limit', '100']
     prs = json.loads(run_command(cmd, GITHUB_TOKEN))
     
+    processed = 0
     for pr in prs:
+        if processed >= count:
+            break
+
         # Check if it matches type and is linked to an issue
         if search_str in pr['headRefName'] and any(l['name'] == 'has-issue' for l in pr['labels']):
             
@@ -242,6 +207,7 @@ def action_merge_prs(as_user_prs=False):
 
             print(f"Merging {target_type} PR #{pr['number']}")
             run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], PERSONAL_ACCESS_TOKEN)
+            processed += 1
 
 def action_approve_bot_prs(count):
     print(f"Approving up to {count} Bot PRs...")
@@ -256,10 +222,10 @@ def action_approve_bot_prs(count):
         print(f"Approving Bot PR #{pr['number']}")
         run_command(['gh', 'pr', 'review', str(pr['number']), '--repo', REPO, '--approve', '--body', 'LGTM'], PERSONAL_ACCESS_TOKEN)
 
-def action_close_issues():
+def action_close_issues(count=100):
     # In this workflow, issues are auto-closed by "Fixes #" when PR merges.
     # But if we wanted to enforce explicit closing or clean up stuck ones:
-    print("Verifying/Closing issues... (Logic currently relies on 'Fixes #' keyword in PRs)")
+    print(f"Verifying/Closing up to {count} issues... (Logic currently relies on 'Fixes #' keyword in PRs)")
     pass
 
 # --- Main Logic ---
@@ -336,15 +302,15 @@ def main():
     elif args.action == "create_user_prs":
         action_create_prs(args.count, as_user=True)
     elif args.action == "link_prs_issues":
-        action_link_prs_issues()
+        action_link_prs_issues(args.count)
     elif args.action == "approve_bot_prs":
         action_approve_bot_prs(args.count)
     elif args.action == "merge_bot_prs":
-        action_merge_prs(as_user_prs=False)
+        action_merge_prs(as_user_prs=False, count=args.count)
     elif args.action == "merge_user_prs":
-        action_merge_prs(as_user_prs=True)
+        action_merge_prs(as_user_prs=True, count=args.count)
     elif args.action == "close_issues":
-        action_close_issues()
+        action_close_issues(args.count)
 
 if __name__ == "__main__":
     main()

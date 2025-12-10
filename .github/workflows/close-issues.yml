@@ -2,6 +2,12 @@ name: Close Issues
 
 on:
   workflow_dispatch:
+    inputs:
+      count:
+        description: 'Limit number of issues to close (optional)'
+        required: false
+        default: '100'
+        type: string
 
 permissions:
   contents: read
@@ -24,5 +30,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
-          python .github/scripts/daily_ops.py --action close_issues
-
+          python .github/scripts/daily_ops.py --action close_issues --count ${{ inputs.count }}
