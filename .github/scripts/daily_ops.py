@@ -148,16 +148,30 @@ def ensure_label_exists(name, color, description, token):
     # #region agent log
     log_debug("ensure_label_exists called", {"name": name}, "daily_ops.py:ensure_label_exists", "HypothesisA")
     # #endregion
-    # Check if label exists
+    
+    print(f"Ensuring label '{name}' exists...")
     try:
-        run_command(['gh', 'label', 'view', name, '--repo', REPO], token)
-    except subprocess.CalledProcessError as e:
-        # #region agent log
-        log_debug("gh label view failed", {"stderr": e.stderr}, "daily_ops.py:ensure_label_exists", "HypothesisA")
-        # #endregion
-        # Label doesn't exist, create it
+        # Use 'list' instead of 'view' as 'view' is not supported in all gh versions
+        cmd = ['gh', 'label', 'list', '--repo', REPO, '--json', 'name']
+        output = run_command(cmd, token)
+        labels = json.loads(output)
+        existing_names = [l['name'] for l in labels]
+        
+        if name in existing_names:
+            # #region agent log
+            log_debug("Label already exists", {"name": name}, "daily_ops.py:ensure_label_exists", "HypothesisA")
+            # #endregion
+            print(f"Label '{name}' already exists.")
+            return
+
         print(f"Creating label '{name}'...")
         run_command(['gh', 'label', 'create', name, '--repo', REPO, '--color', color, '--description', description], token)
+        
+    except Exception as e:
+        # #region agent log
+        log_debug("Label check/create failed", {"error": str(e)}, "daily_ops.py:ensure_label_exists", "HypothesisA")
+        # #endregion
+        print(f"Warning: Could not ensure label '{name}' exists: {e}")
 
 # --- Atomic Operations ---
 
