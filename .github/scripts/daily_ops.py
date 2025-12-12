@@ -3,7 +3,8 @@ import random
 import subprocess
 import json
 import sys
-from datetime import datetime
+import argparse
+from datetime import datetime, timezone
 
 # Environment variables
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -41,20 +42,24 @@ def run_command(command, token=None):
         raise
 
 def get_day_of_year():
-    return int(datetime.utcnow().strftime('%j'))
+    return int(datetime.now(timezone.utc).strftime('%j'))
 
 def get_current_timestamp():
-    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def create_issue(title, body, token):
-    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body, '--json', 'number']
+    # gh issue create returns the URL of the created issue
+    cmd = ['gh', 'issue', 'create', '--repo', REPO, '--title', title, '--body', body]
     output = run_command(cmd, token)
-    return json.loads(output)['number']
+    # Output is typically the URL, e.g., https://github.com/owner/repo/issues/123
+    return int(output.strip().split('/')[-1])
 
 def create_pr(title, body, head_branch, token):
-    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body, '--json', 'number']
+    # gh pr create returns the URL of the created PR
+    cmd = ['gh', 'pr', 'create', '--repo', REPO, '--head', head_branch, '--base', DEFAULT_BRANCH, '--title', title, '--body', body]
     output = run_command(cmd, token)
-    return json.loads(output)['number']
+    # Output is typically the URL, e.g., https://github.com/owner/repo/pull/456
+    return int(output.strip().split('/')[-1])
 
 def get_open_issues_without_pr():
     cmd = ['gh', 'issue', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,labels,title', '--limit', '100']
@@ -105,7 +110,121 @@ def configure_git_identity(name, email):
     run_command(['git', 'config', 'user.name', name])
     run_command(['git', 'config', 'user.email', email])
 
-def main():
+def ensure_label_exists(name, color, description, token):
+    print(f"Ensuring label '{name}' exists...")
+    try:
+        # Use 'list' instead of 'view' as 'view' is not supported in all gh versions
+        cmd = ['gh', 'label', 'list', '--repo', REPO, '--json', 'name']
+        output = run_command(cmd, token)
+        labels = json.loads(output)
+        existing_names = [l['name'] for l in labels]
+        
+        if name in existing_names:
+            print(f"Label '{name}' already exists.")
+            return
+
+        print(f"Creating label '{name}'...")
+        run_command(['gh', 'label', 'create', name, '--repo', REPO, '--color', color, '--description', description], token)
+        
+    except Exception as e:
+        print(f"Warning: Could not ensure label '{name}' exists: {e}")
+
+# --- Atomic Operations ---
+
+def action_create_issues(count, as_user=False):
+    token = PERSONAL_ACCESS_TOKEN if as_user else GITHUB_TOKEN
+    creator = "User" if as_user else "Bot"
+    if not as_user:
+        configure_git_identity("github-actions[bot]", "github-actions[bot]@users.noreply.github.com")
+    
+    print(f"Creating {count} issues as {creator}...")
+    for i in range(count):
+        ts = get_current_timestamp()
+        create_issue(f"Random Issue {ts} #{i+1}", f"Auto-generated issue by {creator}.", token)
+
+def action_create_prs(count, as_user=False):
+    token = PERSONAL_ACCESS_TOKEN if as_user else GITHUB_TOKEN
+    creator = "User" if as_user else "Bot"
+    prefix = "user" if as_user else "bot"
+    
+    if as_user:
+        configure_git_identity("sreekaran", "ss@sreekaran.com")
+    else:
+        configure_git_identity("github-actions[bot]", "github-actions[bot]@users.noreply.github.com")
+
+    print(f"Creating {count} PRs as {creator}...")
+    for i in range(count):
+        ts = get_current_timestamp()
+        branch_name = f"auto/{prefix}-pr-{get_day_of_year()}-{i}-{random.randint(1000,9999)}"
+        create_git_branch(branch_name)
+        create_pr(f"Random {creator} PR {ts} #{i+1}", f"Auto-generated {prefix} PR.", branch_name, token)
+
+def action_link_prs_issues(count=100):
+    print(f"Processing queue (Linking up to {count} PRs to Issues)...")
+    unlinked_issues = get_open_issues_without_pr()
+    unlinked_prs = get_open_prs_without_issue()
+    
+    # Process as many pairs as possible
+    processed = 0
+    while unlinked_issues and unlinked_prs and processed < count:
+        issue = unlinked_issues.pop(0)
+        pr = unlinked_prs.pop(0)
+        # Use GITHUB_TOKEN for linking actions (bot permissions usually sufficient)
+        link_pr_to_issue(pr['number'], issue['number'], GITHUB_TOKEN)
+        processed += 1
+
+def action_merge_prs(as_user_prs=False, count=100, merge_token=PERSONAL_ACCESS_TOKEN):
+    target_type = "User" if as_user_prs else "Bot"
+    search_str = 'user-pr' if as_user_prs else 'bot-pr'
+    
+    print(f"Merging up to {count} {target_type} PRs...")
+    cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels,reviews', '--limit', '100']
+    prs = json.loads(run_command(cmd, GITHUB_TOKEN))
+    
+    processed = 0
+    for pr in prs:
+        if processed >= count:
+            break
+
+        if search_str in pr['headRefName'] and any(l['name'] == 'has-issue' for l in pr['labels']):
+            
+            # For Bot PRs, we usually require approval first
+            if not as_user_prs:
+                # Check review decision
+                status_cmd = ['gh', 'pr', 'view', str(pr['number']), '--repo', REPO, '--json', 'reviewDecision']
+                decision = json.loads(run_command(status_cmd, GITHUB_TOKEN)).get('reviewDecision')
+                
+                if decision != 'APPROVED':
+                    print(f"Skipping Bot PR #{pr['number']} (Not APPROVED)")
+                    continue
+
+            print(f"Merging {target_type} PR #{pr['number']}")
+            run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], merge_token)
+            processed += 1
+
+def action_approve_bot_prs(count):
+    print(f"Approving up to {count} Bot PRs...")
+    cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels', '--limit', '100']
+    prs = json.loads(run_command(cmd, GITHUB_TOKEN))
+    
+    bot_prs_linked = [p for p in prs if 'bot-pr' in p['headRefName'] and any(l['name'] == 'has-issue' for l in p['labels'])]
+    num_to_approve = min(len(bot_prs_linked), count)
+    
+    for i in range(num_to_approve):
+        pr = bot_prs_linked[i]
+        print(f"Approving Bot PR #{pr['number']}")
+        # Use PERSONAL_ACCESS_TOKEN to approve on behalf of the user
+        run_command(['gh', 'pr', 'review', str(pr['number']), '--repo', REPO, '--approve', '--body', 'LGTM'], PERSONAL_ACCESS_TOKEN)
+
+def action_close_issues(count=100):
+    # In this workflow, issues are auto-closed by "Fixes #" when PR merges.
+    # But if we wanted to enforce explicit closing or clean up stuck ones:
+    print(f"Verifying/Closing up to {count} issues... (Logic currently relies on 'Fixes #' keyword in PRs)")
+    pass
+
+# --- Main Logic ---
+
+def run_daily_recipe():
     # 1. Random Skip (1 in 7 chance)
     if random.randint(1, 7) == 1:
         print("Random skip day triggered. Exiting.")
@@ -114,132 +233,83 @@ def main():
     day_of_year = get_day_of_year()
     print(f"Day of year: {day_of_year}")
     
-    # Queue Processing Function
-    def process_queue():
-        print("Processing queue...")
-        unlinked_issues = get_open_issues_without_pr()
-        unlinked_prs = get_open_prs_without_issue()
-        
-        while unlinked_issues and unlinked_prs:
-            issue = unlinked_issues.pop(0)
-            pr = unlinked_prs.pop(0)
-            # Use GITHUB_TOKEN for linking actions (bot permissions usually sufficient)
-            link_pr_to_issue(pr['number'], issue['number'], GITHUB_TOKEN)
-
+    # Ensure labels exist
+    ensure_label_exists('has-pr', '0E8A16', 'Indicates this issue has an attached PR', GITHUB_TOKEN)
+    ensure_label_exists('has-issue', '1D76DB', 'Indicates this PR is attached to an issue', GITHUB_TOKEN)
+    
     if day_of_year % 2 == 0:
         print("Even day operations.")
-        
+        # Even Day: Issues & Bot PRs
         # Determine Issue Creator
-        # Index = day_of_year / 2. If index is Odd -> User, Even -> Bot
         index = day_of_year // 2
+        is_user_creator = (index % 2 != 0)
         
-        if index % 2 != 0:
-            print(f"Index {index} is Odd. Creating issues as User (sreekaran).")
-            issue_token = PERSONAL_ACCESS_TOKEN
-        else:
-            print(f"Index {index} is Even. Creating issues as Bot.")
-            issue_token = GITHUB_TOKEN
-            
-        # Create Issues (1-4)
-        num_issues = random.randint(1, 4)
-        print(f"Creating {num_issues} issues...")
-        for i in range(num_issues):
-            ts = get_current_timestamp()
-            create_issue(f"Random Issue {ts} #{i+1}", f"Auto-generated issue on even day {day_of_year}.", issue_token)
-            
-        # Create Bot PRs (1-4)
-        # Configure git for Bot
-        configure_git_identity("github-actions[bot]", "github-actions[bot]@users.noreply.github.com")
+        count_issues = random.randint(1, 4)
+        action_create_issues(count_issues, as_user=is_user_creator)
         
-        num_prs = random.randint(1, 4)
-        print(f"Creating {num_prs} Bot PRs...")
-        for i in range(num_prs):
-            ts = get_current_timestamp()
-            branch_name = f"auto/bot-pr-{day_of_year}-{i}-{random.randint(1000,9999)}"
-            create_git_branch(branch_name)
-            create_pr(f"Random Bot PR {ts} #{i+1}", f"Auto-generated bot PR on even day {day_of_year}.", branch_name, GITHUB_TOKEN)
-            
-        # Process Queue
-        process_queue()
+        count_prs = random.randint(1, 4)
+        action_create_prs(count_prs, as_user=False) # Bot PRs
+        
+        action_link_prs_issues()
         
     else:
         print("Odd day operations.")
+        # Odd Day: User PRs
+        count_prs = random.randint(1, 2)
+        action_create_prs(count_prs, as_user=True) # User PRs
         
-        # Create User PRs (1-2)
-        # Configure git for User
-        configure_git_identity("sreekaran", "ss@sreekaran.com")
+        action_link_prs_issues()
+    
+    # Common Daily Operations
+    # Merge User PRs - Use PERSONAL_ACCESS_TOKEN to simulate user merge, OR GITHUB_TOKEN if bot should do it.
+    # Recipe says "merge all user PRs". Defaulting to GITHUB_TOKEN for reliability in automation.
+    action_merge_prs(as_user_prs=True, merge_token=GITHUB_TOKEN) 
+    
+    if day_of_year % 2 != 0:
+        # Odd day specific: Approve Bot PRs
+        action_approve_bot_prs(random.randint(1, 2))
         
-        num_prs = random.randint(1, 2)
-        print(f"Creating {num_prs} User PRs...")
-        for i in range(num_prs):
-            ts = get_current_timestamp()
-            branch_name = f"auto/user-pr-{day_of_year}-{i}-{random.randint(1000,9999)}"
-            create_git_branch(branch_name)
-            create_pr(f"Random User PR {ts} #{i+1}", f"Auto-generated user PR on odd day {day_of_year}.", branch_name, PERSONAL_ACCESS_TOKEN)
-            
-        # Process Queue (Link new PRs to existing issues if available)
-        process_queue()
-        
-        # Merge User PRs (attached to issue)
-        # Find PRs created by user (we can't easily filter by author in 'gh pr list' without parsing, 
-        # but we can check the label 'has-issue' and assume we want to merge them if they are user PRs.
-        # However, recipe says "merge all user PRs attached to an issue".
-        # We can differentiate by branch name pattern 'user-pr' vs 'bot-pr' or fetch author.
-        print("Merging User PRs...")
-        cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels', '--limit', '100']
-        prs = json.loads(run_command(cmd, GITHUB_TOKEN))
-        
-        for pr in prs:
-            if 'user-pr' in pr['headRefName'] and any(l['name'] == 'has-issue' for l in pr['labels']):
-                print(f"Merging User PR #{pr['number']}")
-                run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], PERSONAL_ACCESS_TOKEN)
-        
-        # Approve Bot PRs (attached to issue) (1-2)
-        print("Approving Bot PRs...")
-        bot_prs_linked = [p for p in prs if 'bot-pr' in p['headRefName'] and any(l['name'] == 'has-issue' for l in p['labels'])]
-        num_to_approve = min(len(bot_prs_linked), random.randint(1, 2))
-        
-        for i in range(num_to_approve):
-            pr = bot_prs_linked[i]
-            print(f"Approving Bot PR #{pr['number']}")
-            run_command(['gh', 'pr', 'review', str(pr['number']), '--repo', REPO, '--approve', '--body', 'LGTM'], PERSONAL_ACCESS_TOKEN)
-            
-        # Merge Bot PRs (attached + approved)
-        print("Merging Approved Bot PRs...")
-        # Re-fetch PRs to get updated review status, or just iterate and check
-        # We need to check review status for bot PRs
-        cmd = ['gh', 'pr', 'list', '--repo', REPO, '--state', 'open', '--json', 'number,headRefName,labels,reviews', '--limit', '100']
-        prs_full = json.loads(run_command(cmd, GITHUB_TOKEN))
-        
-        for pr in prs_full:
-            if 'bot-pr' in pr['headRefName'] and any(l['name'] == 'has-issue' for l in pr['labels']):
-                # Check for approval
-                # API returns list of reviews. Check if any is APPROVED by me (sreekaran)
-                # For simplicity, we just check if *any* state is APPROVED since I am the only reviewer usually.
-                # To be precise, we could check the reviewer login.
-                # Assuming 'reviews' field structure or fetching individually
-                # 'reviews' in list view might be empty, better to fetch individually if needed, 
-                # but let's try 'reviewDecision' if available in list. 'reviewDecision' is 'APPROVED'.
-                
-                # Let's verify review status using reviewDecision
-                status_cmd = ['gh', 'pr', 'view', str(pr['number']), '--repo', REPO, '--json', 'reviewDecision']
-                decision = json.loads(run_command(status_cmd, GITHUB_TOKEN)).get('reviewDecision')
-                
-                if decision == 'APPROVED':
-                    print(f"Merging Bot PR #{pr['number']}")
-                    run_command(['gh', 'pr', 'merge', str(pr['number']), '--repo', REPO, '--merge', '--delete-branch'], PERSONAL_ACCESS_TOKEN)
+    # Merge Bot PRs (if approved)
+    action_merge_prs(as_user_prs=False, merge_token=GITHUB_TOKEN)
+    action_close_issues()
 
-        # Close Issues linked to merged PRs
-        # The "Fixes #ID" in body should auto-close issues when PR is merged to default branch.
-        # So explicit closing might be redundant if we used the keyword correctly.
-        # But if we want to be sure:
-        print("Verifying closed issues...")
-        # Since we used "Fixes #ID", GitHub handles this. 
-        # But if we want to explicitly close any that were missed:
-        # We would need to track which PRs were just merged and parse their bodies to find the issue number.
-        # Given the requirement "close all the issues that have a merged pr attached to them",
-        # relying on GitHub's "Fixes" keyword is the standard "recipe" way.
-        # I will assume the "Fixes" keyword handles this.
+def main():
+    parser = argparse.ArgumentParser(description="Daily Operations Script")
+    parser.add_argument("--action", type=str, default="daily", 
+                        choices=["daily", "create_bot_issues", "create_user_issues", 
+                                 "create_bot_prs", "create_user_prs", "link_prs_issues", 
+                                 "approve_bot_prs", "merge_bot_prs", "merge_user_prs", "close_issues"],
+                        help="Action to perform")
+    parser.add_argument("--count", type=int, default=1, help="Number of items to process (where applicable)")
+    
+    args = parser.parse_args()
+    
+    # Ensure labels exist for any operation that might need them
+    ensure_label_exists('has-pr', '0E8A16', 'Indicates this issue has an attached PR', GITHUB_TOKEN)
+    ensure_label_exists('has-issue', '1D76DB', 'Indicates this PR is attached to an issue', GITHUB_TOKEN)
+
+    if args.action == "daily":
+        run_daily_recipe()
+    elif args.action == "create_bot_issues":
+        action_create_issues(args.count, as_user=False)
+    elif args.action == "create_user_issues":
+        action_create_issues(args.count, as_user=True)
+    elif args.action == "create_bot_prs":
+        action_create_prs(args.count, as_user=False)
+    elif args.action == "create_user_prs":
+        action_create_prs(args.count, as_user=True)
+    elif args.action == "link_prs_issues":
+        action_link_prs_issues(args.count)
+    elif args.action == "approve_bot_prs":
+        action_approve_bot_prs(args.count)
+    elif args.action == "merge_bot_prs":
+        # Explicitly use GITHUB_TOKEN for bot identity merges as requested
+        action_merge_prs(as_user_prs=False, count=args.count, merge_token=GITHUB_TOKEN)
+    elif args.action == "merge_user_prs":
+        # Explicitly use GITHUB_TOKEN for bot identity merges as requested
+        action_merge_prs(as_user_prs=True, count=args.count, merge_token=GITHUB_TOKEN)
+    elif args.action == "close_issues":
+        action_close_issues(args.count)
 
 if __name__ == "__main__":
     main()
